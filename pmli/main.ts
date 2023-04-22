@@ -409,9 +409,101 @@ async function test_supply_usdc_to_aave() {
   });
 }
 
+async function test_supply_n_withdraw_usdc_at_aave() {
+  const chainId = common.ChainId.mainnet;
+
+  const supplyTokenList = await api.protocols.aavev3.getSupplyTokenList(chainId);
+  const withdrawTokenList = await api.protocols.aavev3.getWithdrawTokenList(chainId);
+  // console.log('supply==============================');
+  // console.log(supplyTokenList);
+  // console.log('withdraw==============================');
+  // console.log(withdrawTokenList);
+  // //supply
+  const tokenList = await api.protocols.aavev3.getSupplyTokenList(chainId);
+  const underlyingToken = tokenList[0][0];
+  const aToken = tokenList[0][1];
+
+  const supplyQuotation = await api.protocols.aavev3.getSupplyQuotation(chainId, {
+    input: {
+      token: USDC,
+      amount: '100',
+    },
+    tokenOut: aEthUSDC,
+  });
+
+  const supplyLogic = await api.protocols.aavev3.newSupplyLogic(supplyQuotation);
+
+  //withdraw
+  const withdrawQuotation = await api.protocols.aavev3.getWithdrawQuotation(chainId, {
+    input: supplyQuotation.output,
+    tokenOut: USDC,
+  });
+  const withdrawLogic = await api.protocols.aavev3.newWithdrawLogic(withdrawQuotation);
+
+  // Step 5.
+  // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
+  // Additionally, slippage is optional and defaults to 1%. If customization is desired, the type should be a number,
+  // and the value should be in Basis Points, where 1 Basis Point equals 0.01%.
+  const routerData: api.RouterData = {
+    chainId,
+    account: signer.address,
+    logics: [supplyLogic, withdrawLogic],
+    slippage: 300, // 3%
+  };
+
+  // Step 6.
+  // Next, use `api.estimateRouterData` to estimate how much funds will be spent (funds) and
+  // how many balances will be obtained (balances) from this transaction.
+  // It will also identify any approvals that the user needs to execute (approvals) before the transaction
+  // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
+  const estimateResult = await api.estimateRouterData(routerData);
+  //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
+  console.log(estimateResult);
+
+  // // Step 7.
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
+
+  // Step 8.
+  // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
+  // which will essentially include the Router contract address (to), transaction data (data),
+  // and ETH to be carried in the transaction (value).
+  const transactionRequest = await api.buildRouterTransactionRequest(routerData);
+  expect(transactionRequest).to.include.all.keys('to', 'data', 'value');
+
+  // const gg = 'hello world';
+  // console.log(gg);
+  // console.log(transactionRequest);
+  // console.log(routerData);
+
+  // console.log('sending TX...');
+  console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
+
+  // Send a transaction
+  await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
+    console.log('txHash', txObj.hash);
+  });
+}
+
 // my1();
 //test_send_1_ether_using_etherjs();
 //test_eth_swap2_usdc();
 // test_eth_swap2_usdc();
 //test_usdc_swap2_eth();
-test_supply_usdc_to_aave();
+// test_supply_usdc_to_aave();
+test_supply_n_withdraw_usdc_at_aave();

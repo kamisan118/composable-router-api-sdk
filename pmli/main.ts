@@ -4,7 +4,8 @@ import { expect } from 'chai';
 import { ethers, TypedDataDomain } from 'ethers';
 import { TransactionRequest } from 'ethers/src.ts/providers/provider';
 import { PermitSingleData } from '@uniswap/permit2-sdk';
-import { PermitData } from "@uniswap/permit2-sdk/dist/domain";
+import { PermitData } from '@uniswap/permit2-sdk/dist/domain';
+import express, { Request, Response } from 'express';
 
 //set up wallet
 const privateKey = '8f1841d8559ece81894165d0d0e7de45680324c845e1f3e2deb19527c1700f47';
@@ -506,4 +507,22 @@ async function test_supply_n_withdraw_usdc_at_aave() {
 // test_eth_swap2_usdc();
 //test_usdc_swap2_eth();
 // test_supply_usdc_to_aave();
-test_supply_n_withdraw_usdc_at_aave();
+// test_supply_n_withdraw_usdc_at_aave();
+
+function run() {
+  const app = express();
+  const port = 3000;
+
+  app.use(express.json());
+
+  app.post('/webhook', (req: Request, res: Response) => {
+    console.log(req.body);
+    res.status(200).send('Webhook received!');
+  });
+
+  app.listen(port, () => {
+    console.log(`Server is running on port ${port}.`);
+  });
+}
+
+run();

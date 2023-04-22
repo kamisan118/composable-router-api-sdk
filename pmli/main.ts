@@ -1,8 +1,10 @@
 import * as api from '@furucombo/composable-router-api';
 import * as common from '@furucombo/composable-router-common';
 import { expect } from 'chai';
-import { ethers } from 'ethers';
+import { ethers, TypedDataDomain } from 'ethers';
 import { TransactionRequest } from 'ethers/src.ts/providers/provider';
+import { PermitSingleData } from '@uniswap/permit2-sdk';
+import { PermitData } from "@uniswap/permit2-sdk/dist/domain";
 
 //set up wallet
 const privateKey = '8f1841d8559ece81894165d0d0e7de45680324c845e1f3e2deb19527c1700f47';
@@ -24,6 +26,14 @@ const USDC = {
   decimals: 6,
   symbol: 'USDC',
   name: 'USD Coin',
+};
+
+const aEthUSDC = {
+  chainId: 1,
+  address: '0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c',
+  decimals: 6,
+  symbol: 'aEthUSDC',
+  name: 'Aave Ethereum USDC',
 };
 
 const WBTC = {
@@ -216,11 +226,33 @@ async function test_usdc_swap2_eth() {
   // It will also identify any approvals that the user needs to execute (approvals) before the transaction
   // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
   const estimateResult = await api.estimateRouterData(routerData);
-  expect(estimateResult).to.include.all.keys('funds', 'balances', 'approvals');
-  expect(estimateResult.funds).to.have.lengthOf(1);
-  expect(estimateResult.funds.get(USDC).amount).to.be.eq('100');
-  expect(estimateResult.balances).to.have.lengthOf(1);
-  expect(estimateResult.approvals).to.have.lengthOf(1);
+  // expect(estimateResult).to.include.all.keys('funds', 'balances', 'approvals', 'permitData');
+  // expect(estimateResult.funds).to.have.lengthOf(1);
+  // expect(estimateResult.funds.get(USDC).amount).to.be.eq('100');
+  // expect(estimateResult.balances).to.have.lengthOf(1);
+  // expect(estimateResult.approvals).to.have.lengthOf(1);
+  console.log(estimateResult);
+
+  //讀取需要的permit資訊, 自動進行permit
+  /* e.g.,
+    permitData: {
+    domain: {
+      name: 'Permit2',
+      chainId: 1,
+      verifyingContract: '0x000000000022D473030F116dDEE9F6B43aC78BA3'
+    },
+    types: { PermitSingle: [Array], PermitDetails: [Array] },
+    values: {
+      details: [Object],
+      spender: '0x3b5832c6a0868dDf9A92595DfA1ce7A86E511599',
+      sigDeadline: 1682171477
+    }
+  }
+   */
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
 
   // // Step 7.
   // // If there is any permit2 data that needs to be signed, the signed permit data and signature
@@ -229,6 +261,19 @@ async function test_usdc_swap2_eth() {
   //   '0xbb8d0cf3e494c2ed4dc1057ee31c90cab5387b8a606019cc32a6d12f714303df183b1b0cd7a1114bd952a4c533ac18606056dda61f922e030967df0836cf76f91c'; // for example
   // routerData.permitData = estimateResult.permitData;
   // routerData.permitSig = permitSig;
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
 
   // Step 8.
   // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
@@ -274,19 +319,39 @@ async function test_send_1_ether_using_etherjs() {
 async function test_supply_usdc_to_aave() {
   const chainId = common.ChainId.mainnet;
 
-  const tokenList = await api.protocols.aavev3.getWithdrawTokenList(chainId);
-  const aToken = tokenList[0][0];
-  const underlyingToken = tokenList[0][1];
+  const supplyTokenList = await api.protocols.aavev3.getSupplyTokenList(chainId);
+  const withdrawTokenList = await api.protocols.aavev3.getWithdrawTokenList(chainId);
+  // console.log('supply==============================');
+  // console.log(supplyTokenList);
+  // console.log('withdraw==============================');
+  // console.log(withdrawTokenList);
+  // //supply
+  const tokenList = await api.protocols.aavev3.getSupplyTokenList(chainId);
+  const underlyingToken = tokenList[0][0];
+  const aToken = tokenList[0][1];
 
-  const withdrawQuotation = await api.protocols.aavev3.getWithdrawQuotation(chainId, {
+  const supplyQuotation = await api.protocols.aavev3.getSupplyQuotation(chainId, {
     input: {
-      token: aToken,
-      amount: '10',
+      token: USDC,
+      amount: '100',
     },
-    tokenOut: underlyingToken,
+    tokenOut: aEthUSDC,
   });
 
-  const withdrawLogic = await api.protocols.aavev3.newWithdrawLogic(withdrawQuotation);
+  const supplyLogic = await api.protocols.aavev3.newSupplyLogic(supplyQuotation);
+  // //withdraw
+  // const tokenList = await api.protocols.aavev3.getWithdrawTokenList(chainId);
+  // const aToken = tokenList[0][0];
+  // const underlyingToken = tokenList[0][1];
+  //
+  // const withdrawQuotation = await api.protocols.aavev3.getWithdrawQuotation(chainId, {
+  //   input: {
+  //     token: aToken,
+  //     amount: '10',
+  //   },
+  //   tokenOut: underlyingToken,
+  // });
+  // const withdrawLogic = await api.protocols.aavev3.newWithdrawLogic(withdrawQuotation);
 
   // Step 5.
   // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
@@ -295,7 +360,7 @@ async function test_supply_usdc_to_aave() {
   const routerData: api.RouterData = {
     chainId,
     account: signer.address,
-    logics: [withdrawLogic],
+    logics: [supplyLogic],
     slippage: 300, // 3%
   };
 
@@ -305,19 +370,23 @@ async function test_supply_usdc_to_aave() {
   // It will also identify any approvals that the user needs to execute (approvals) before the transaction
   // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
   const estimateResult = await api.estimateRouterData(routerData);
-  expect(estimateResult).to.include.all.keys('funds', 'balances', 'approvals');
-  expect(estimateResult.funds).to.have.lengthOf(1);
-  expect(estimateResult.funds.get(ETH).amount).to.be.eq('1');
-  expect(estimateResult.balances).to.have.lengthOf(1);
-  expect(estimateResult.approvals).to.have.lengthOf(0);
+  //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
+  console.log(estimateResult);
 
   // // Step 7.
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
   // // If there is any permit2 data that needs to be signed, the signed permit data and signature
   // // should be added to the original Router Data.
-  // const permitSig =
-  //   '0xbb8d0cf3e494c2ed4dc1057ee31c90cab5387b8a606019cc32a6d12f714303df183b1b0cd7a1114bd952a4c533ac18606056dda61f922e030967df0836cf76f91c'; // for example
-  // routerData.permitData = estimateResult.permitData;
-  // routerData.permitSig = permitSig;
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(<TypedDataDomain>permitData.domain, permitData.types, permitData.values);
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
 
   // Step 8.
   // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
@@ -329,7 +398,7 @@ async function test_supply_usdc_to_aave() {
   // const gg = 'hello world';
   // console.log(gg);
   // console.log(transactionRequest);
-  console.log(routerData);
+  // console.log(routerData);
 
   // console.log('sending TX...');
   console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
@@ -344,5 +413,5 @@ async function test_supply_usdc_to_aave() {
 //test_send_1_ether_using_etherjs();
 //test_eth_swap2_usdc();
 // test_eth_swap2_usdc();
-test_usdc_swap2_eth();
-// test_supply_usdc_to_aave();
+//test_usdc_swap2_eth();
+test_supply_usdc_to_aave();

@@ -6,7 +6,6 @@ import { TransactionRequest } from 'ethers/src.ts/providers/provider';
 import { PermitSingleData } from '@uniswap/permit2-sdk';
 import { PermitData } from '@uniswap/permit2-sdk/dist/domain';
 import express, { Request, Response } from 'express';
-import { sign } from "crypto";
 
 //set up wallet
 const privateKey = '8f1841d8559ece81894165d0d0e7de45680324c845e1f3e2deb19527c1700f47';
@@ -384,7 +383,11 @@ async function test_supply_usdc_to_aave() {
   const permitData = estimateResult.permitData as PermitData;
   if (permitData != undefined) {
     //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
-    const permitSig = await signer.signTypedData(<TypedDataDomain>permitData.domain, permitData.types, permitData.values);
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
     routerData.permitData = permitData;
     routerData.permitSig = permitSig;
   }
@@ -581,17 +584,22 @@ async function test_supply_n_withdraw_usdc_at_aave2() {
   });
 }
 
-
 async function supply_all_usdc_to_aave2() {
   const chainId = common.ChainId.mainnet;
 
-  const fullBalance = await get_balance_of_erc20(USDC.address);
-  console.log(fullBalance.toString());
+
+  // const fullBalance = await get_balance_of_erc20(USDC.address);
+  // // console.log(fullBalance.toString());
+  // const decimalAdjBal = (Number(fullBalance) / Math.pow(10, USDC.decimals)).toString();
+  // console.log(decimalAdjBal);
+  // console.log(fullBalance.toString());
+  const decimalAdjBal = await get_balance_of_erc20(USDC.address);
+  console.log(`Supplying ${decimalAdjBal} USDC to AaveV2 lending pool...`)
   //withdraw
   const supplyQuotation = await api.protocols.aavev2.getDepositQuotation(chainId, {
     input: {
       token: USDC,
-      amount: fullBalance.toString(),
+      amount: decimalAdjBal.toString(),
     },
     tokenOut: aEthUSDC,
   });
@@ -615,7 +623,7 @@ async function supply_all_usdc_to_aave2() {
   // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
   const estimateResult = await api.estimateRouterData(routerData);
   //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
-  console.log(estimateResult);
+  // console.log(estimateResult);
 
   // // Step 7.
   //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
@@ -657,14 +665,17 @@ async function supply_all_usdc_to_aave2() {
   });
 }
 
-async function withdraw_usdc_from_aave2() {
+async function withdraw_all_usdc_from_aave2() {
   const chainId = common.ChainId.mainnet;
+
+  const decimalAdjBal = await get_balance_of_erc20(aEthUSDC.address);
+  console.log(`Withdrawing ${decimalAdjBal} aUSDC from AaveV2 pool...`);
 
   //withdraw
   const withdrawQuotation = await api.protocols.aavev2.getWithdrawQuotation(chainId, {
     input: {
       token: aEthUSDC,
-      amount: '100',
+      amount: decimalAdjBal.toString(),
     },
     tokenOut: USDC,
   });
@@ -688,7 +699,7 @@ async function withdraw_usdc_from_aave2() {
   // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
   const estimateResult = await api.estimateRouterData(routerData);
   //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
-  console.log(estimateResult);
+  // console.log(estimateResult);
 
   // // Step 7.
   //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
@@ -728,6 +739,8 @@ async function withdraw_usdc_from_aave2() {
   await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
     console.log('txHash', txObj.hash);
   });
+
+  console.log(`Withdrawing ${decimalAdjBal} aUSDC from AaveV2 pool... done.`);
 }
 
 async function test_eth_swap2_usdc_n_supply_usdc_to_aave2() {
@@ -883,6 +896,7 @@ function run() {
 
     if (anomalyScore > 0.7) {
       console.log(`Anomaly score: ${anomalyScore} is larger than 0.7!! Let's exit liquidity!!`);
+      withdraw_all_usdc_from_aave2();
     } else {
       console.log(`Anomaly score: ${anomalyScore} is smaller than 0.7, no need to process.`);
     }
@@ -900,30 +914,30 @@ async function loadJsonFromFile(path: string): Promise<any> {
 }
 
 async function get_balance_of_aETHUSDC() {
-  // 假設有一個叫做 "data.json" 的檔案
-  console.log('in get_balance_of_aETHUSDC()');
-  const genericErc20Abi = await loadJsonFromFile('pmli/erc20.abi.json');
-  const tokenContractAddress = aEthUSDC.address;
-  const contract = new ethers.Contract(tokenContractAddress, genericErc20Abi, provider);
-  const balance = await contract.balanceOf((signer.address));
-  console.log(balance);
-  return balance;
+  return await get_balance_of_erc20(aEthUSDC.address);
 }
 
 async function get_balance_of_erc20(tokenContractAddress: string) {
-  // 假設有一個叫做 "data.json" 的檔案
-  console.log('in get_balance_of_aETHUSDC()');
+  // console.log('in get_balance_of_erc20()');
   const genericErc20Abi = await loadJsonFromFile('pmli/erc20.abi.json');
   const contract = new ethers.Contract(tokenContractAddress, genericErc20Abi, provider);
+
   const balance = await contract.balanceOf(signer.address);
-  console.log(balance);
-  return balance;
+  const decimals = await contract.decimals();
+  // console.log(decimals);
+  // console.log(Number(decimals.toString()));
+  const decimalAdjBalance = Number(balance) / Math.pow(10, Number(decimals.toString()));
+  // console.log(balance);
+  // console.log(decimalAdjBalance);
+  return decimalAdjBalance;
 }
 
-
-// test_eth_swap2_usdc_n_supply_usdc_to_aave2();
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function main() {
+  // await test_eth_swap2_usdc_n_supply_usdc_to_aave2();
   // await test_sample_code_by_furucombo();
   // await test_send_1_ether_using_etherjs();
   // await test_eth_swap2_usdc();
@@ -933,17 +947,27 @@ async function main() {
   // await test_supply_n_withdraw_usdc_at_aave();
   // await test_supply_n_withdraw_usdc_at_aave3();
   // await test_supply_n_withdraw_usdc_at_aave2();
+  // let usdc_bal = await get_balance_of_erc20(USDC.address);
+  // let ausdc_bal = await get_balance_of_aETHUSDC();
+  // console.log(`Before OP, balance: ${usdc_bal} USDC, ${ausdc_bal} aUSDC`);
+  // // await supply_all_usdc_to_aave2();
+  // // await sleep(5000);
+  // // await withdraw_all_usdc_from_aave2();
+  // //////////////////發現balance的更新速度挺慢(尤其是 aUSDC 的 balance) demo 效果不好, so這邊不用於demo
+  ///////////////////////////更正---------後來發現應該是 aToken 這邊的 bal. 沒更新 得研究為何
+  // usdc_bal = await get_balance_of_erc20(USDC.address);
+  // ausdc_bal = await get_balance_of_aETHUSDC();
+  // console.log(`After OP, balance: ${usdc_bal} USDC, ${ausdc_bal} aUSDC`);
 
   // await get_balance_of_erc20(USDC.address);
   // await get_balance_of_aETHUSDC();
-  await supply_all_usdc_to_aave2();
-  // await get_balance_of_erc20(USDC.address);
+  // // await get_balance_of_erc20(USDC.address);
   // await get_balance_of_aETHUSDC();
-  // await withdraw_usdc_from_aave2();
   // await get_balance_of_erc20(USDC.address);
   // await get_balance_of_aETHUSDC();
 
-  //run();
+  // await supply_all_usdc_to_aave2();
+  run();
 }
 
 main();

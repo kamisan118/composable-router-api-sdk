@@ -6,6 +6,7 @@ import { TransactionRequest } from 'ethers/src.ts/providers/provider';
 import { PermitSingleData } from '@uniswap/permit2-sdk';
 import { PermitData } from '@uniswap/permit2-sdk/dist/domain';
 import express, { Request, Response } from 'express';
+import { sign } from "crypto";
 
 //set up wallet
 const privateKey = '8f1841d8559ece81894165d0d0e7de45680324c845e1f3e2deb19527c1700f47';
@@ -254,7 +255,6 @@ async function test_usdc_swap2_eth() {
   for (const approval of estimateResult.approvals) {
     const tx = await signer.sendTransaction(<TransactionRequest>approval);
   }
-
   // // Step 7.
   // // If there is any permit2 data that needs to be signed, the signed permit data and signature
   // // should be added to the original Router Data.
@@ -410,7 +410,7 @@ async function test_supply_usdc_to_aave() {
   });
 }
 
-async function test_supply_n_withdraw_usdc_at_aave() {
+async function test_supply_n_withdraw_usdc_at_aave3() {
   const chainId = common.ChainId.mainnet;
 
   const supplyTokenList = await api.protocols.aavev3.getSupplyTokenList(chainId);
@@ -501,23 +501,391 @@ async function test_supply_n_withdraw_usdc_at_aave() {
   });
 }
 
-// my1();
-//test_send_1_ether_using_etherjs();
-//test_eth_swap2_usdc();
-// test_eth_swap2_usdc();
-//test_usdc_swap2_eth();
-// test_supply_usdc_to_aave();
-// test_supply_n_withdraw_usdc_at_aave();
+async function test_supply_n_withdraw_usdc_at_aave2() {
+  const chainId = common.ChainId.mainnet;
+  // //supply
+  const supplyQuotation = await api.protocols.aavev2.getDepositQuotation(chainId, {
+    input: {
+      token: USDC,
+      amount: '100',
+    },
+    tokenOut: aEthUSDC,
+  });
+
+  const supplyLogic = await api.protocols.aavev2.newDepositLogic(supplyQuotation);
+
+  //withdraw
+  const withdrawQuotation = await api.protocols.aavev2.getWithdrawQuotation(chainId, {
+    input: supplyQuotation.output,
+    tokenOut: USDC,
+  });
+  const withdrawLogic = await api.protocols.aavev2.newWithdrawLogic(withdrawQuotation);
+
+  // Step 5.
+  // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
+  // Additionally, slippage is optional and defaults to 1%. If customization is desired, the type should be a number,
+  // and the value should be in Basis Points, where 1 Basis Point equals 0.01%.
+  const routerData: api.RouterData = {
+    chainId,
+    account: signer.address,
+    logics: [supplyLogic, withdrawLogic],
+    slippage: 300, // 3%
+  };
+
+  // Step 6.
+  // Next, use `api.estimateRouterData` to estimate how much funds will be spent (funds) and
+  // how many balances will be obtained (balances) from this transaction.
+  // It will also identify any approvals that the user needs to execute (approvals) before the transaction
+  // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
+  const estimateResult = await api.estimateRouterData(routerData);
+  //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
+  console.log(estimateResult);
+
+  // // Step 7.
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
+
+  // Step 8.
+  // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
+  // which will essentially include the Router contract address (to), transaction data (data),
+  // and ETH to be carried in the transaction (value).
+  const transactionRequest = await api.buildRouterTransactionRequest(routerData);
+  expect(transactionRequest).to.include.all.keys('to', 'data', 'value');
+
+  // const gg = 'hello world';
+  // console.log(gg);
+  // console.log(transactionRequest);
+  // console.log(routerData);
+
+  // console.log('sending TX...');
+  console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
+
+  // Send a transaction
+  await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
+    console.log('txHash', txObj.hash);
+  });
+}
+
+
+async function supply_all_usdc_to_aave2() {
+  const chainId = common.ChainId.mainnet;
+
+  const fullBalance = await get_balance_of_erc20(USDC.address);
+  console.log(fullBalance.toString());
+  //withdraw
+  const supplyQuotation = await api.protocols.aavev2.getDepositQuotation(chainId, {
+    input: {
+      token: USDC,
+      amount: fullBalance.toString(),
+    },
+    tokenOut: aEthUSDC,
+  });
+  const supplyLogic = await api.protocols.aavev2.newDepositLogic(supplyQuotation);
+
+  // Step 5.
+  // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
+  // Additionally, slippage is optional and defaults to 1%. If customization is desired, the type should be a number,
+  // and the value should be in Basis Points, where 1 Basis Point equals 0.01%.
+  const routerData: api.RouterData = {
+    chainId,
+    account: signer.address,
+    logics: [supplyLogic],
+    slippage: 300, // 3%
+  };
+
+  // Step 6.
+  // Next, use `api.estimateRouterData` to estimate how much funds will be spent (funds) and
+  // how many balances will be obtained (balances) from this transaction.
+  // It will also identify any approvals that the user needs to execute (approvals) before the transaction
+  // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
+  const estimateResult = await api.estimateRouterData(routerData);
+  //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
+  console.log(estimateResult);
+
+  // // Step 7.
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
+
+  // Step 8.
+  // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
+  // which will essentially include the Router contract address (to), transaction data (data),
+  // and ETH to be carried in the transaction (value).
+  const transactionRequest = await api.buildRouterTransactionRequest(routerData);
+  expect(transactionRequest).to.include.all.keys('to', 'data', 'value');
+
+  // const gg = 'hello world';
+  // console.log(gg);
+  // console.log(transactionRequest);
+  // console.log(routerData);
+
+  // console.log('sending TX...');
+  console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
+
+  // Send a transaction
+  await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
+    console.log('txHash', txObj.hash);
+  });
+}
+
+async function withdraw_usdc_from_aave2() {
+  const chainId = common.ChainId.mainnet;
+
+  //withdraw
+  const withdrawQuotation = await api.protocols.aavev2.getWithdrawQuotation(chainId, {
+    input: {
+      token: aEthUSDC,
+      amount: '100',
+    },
+    tokenOut: USDC,
+  });
+  const withdrawLogic = await api.protocols.aavev2.newWithdrawLogic(withdrawQuotation);
+
+  // Step 5.
+  // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
+  // Additionally, slippage is optional and defaults to 1%. If customization is desired, the type should be a number,
+  // and the value should be in Basis Points, where 1 Basis Point equals 0.01%.
+  const routerData: api.RouterData = {
+    chainId,
+    account: signer.address,
+    logics: [withdrawLogic],
+    slippage: 300, // 3%
+  };
+
+  // Step 6.
+  // Next, use `api.estimateRouterData` to estimate how much funds will be spent (funds) and
+  // how many balances will be obtained (balances) from this transaction.
+  // It will also identify any approvals that the user needs to execute (approvals) before the transaction
+  // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
+  const estimateResult = await api.estimateRouterData(routerData);
+  //若是對 UniswapV3操作才有permit的需求, 對 Aave 的話只需普通的approval
+  console.log(estimateResult);
+
+  // // Step 7.
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
+
+  // Step 8.
+  // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
+  // which will essentially include the Router contract address (to), transaction data (data),
+  // and ETH to be carried in the transaction (value).
+  const transactionRequest = await api.buildRouterTransactionRequest(routerData);
+  expect(transactionRequest).to.include.all.keys('to', 'data', 'value');
+
+  // const gg = 'hello world';
+  // console.log(gg);
+  // console.log(transactionRequest);
+  // console.log(routerData);
+
+  // console.log('sending TX...');
+  console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
+
+  // Send a transaction
+  await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
+    console.log('txHash', txObj.hash);
+  });
+}
+
+async function test_eth_swap2_usdc_n_supply_usdc_to_aave2() {
+  const chainId = common.ChainId.mainnet;
+
+  // Step 1.
+  // Use `api.protocols.uniswapv3.getSwapTokenQuotation` to get a quote for
+  // exchanging 1000 USDC to WBTC on Uniswap V3.
+  const swapQuotation = await api.protocols.uniswapv3.getSwapTokenQuotation(chainId, {
+    input: { token: ETH, amount: '10' }, //注意這個數值的單位是human單位!
+    tokenOut: USDC,
+  });
+
+  // Step 2.
+  // Use `api.protocols.uniswapv3.newSwapTokenLogic` to build the swap Logic data.
+  const swapLogic = api.protocols.uniswapv3.newSwapTokenLogic(swapQuotation);
+
+  const supplyQuotation = await api.protocols.aavev2.getDepositQuotation(chainId, {
+    input: swapQuotation.output,
+    tokenOut: aEthUSDC,
+  });
+
+  const supplyLogic = await api.protocols.aavev2.newDepositLogic(supplyQuotation);
+
+  // Step 5.
+  // Next, prepare the Router Data, which will basically include chainId, account, logics, and slippage data.
+  // Additionally, slippage is optional and defaults to 1%. If customization is desired, the type should be a number,
+  // and the value should be in Basis Points, where 1 Basis Point equals 0.01%.
+  const routerData: api.RouterData = {
+    chainId,
+    account: signer.address,
+    logics: [swapLogic, supplyLogic],
+    slippage: 300, // 3%
+  };
+
+  // Step 6.
+  // Next, use `api.estimateRouterData` to estimate how much funds will be spent (funds) and
+  // how many balances will be obtained (balances) from this transaction.
+  // It will also identify any approvals that the user needs to execute (approvals) before the transaction
+  // and whether there is any permit2 data that the user needs to sign before proceeding (permitData).
+  const estimateResult = await api.estimateRouterData(routerData);
+
+  //estimated needed approval for Permit2 to work correctly. see: https://router-docs.furucombo.app/integrate-js-sdk/estimate-router-data#step-3-approvals-optional
+  for (const approval of estimateResult.approvals) {
+    const tx = await signer.sendTransaction(<TransactionRequest>approval);
+  }
+  // // Step 7.
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  // const permitSig =
+  //   '0xbb8d0cf3e494c2ed4dc1057ee31c90cab5387b8a606019cc32a6d12f714303df183b1b0cd7a1114bd952a4c533ac18606056dda61f922e030967df0836cf76f91c'; // for example
+  // routerData.permitData = estimateResult.permitData;
+  // routerData.permitSig = permitSig;
+  // // If there is any permit2 data that needs to be signed, the signed permit data and signature
+  // // should be added to the original Router Data.
+  const permitData = estimateResult.permitData as PermitData;
+  if (permitData != undefined) {
+    //原理: 先設定allowance給 permit2 contract //然後設定給composable router, permit2的30mins使用權限 來代為操作所有操做
+    const permitSig = await signer.signTypedData(
+      <TypedDataDomain>permitData.domain,
+      permitData.types,
+      permitData.values
+    );
+    routerData.permitData = permitData;
+    routerData.permitSig = permitSig;
+  }
+  // Step 8.
+  // Next, use `api.buildRouterTransactionRequest` to get the transaction request to be sent,
+  // which will essentially include the Router contract address (to), transaction data (data),
+  // and ETH to be carried in the transaction (value).
+  const transactionRequest = await api.buildRouterTransactionRequest(routerData);
+  expect(transactionRequest).to.include.all.keys('to', 'data', 'value');
+
+  // const gg = 'hello world';
+  // console.log(gg);
+  // console.log(transactionRequest);
+  console.log(routerData);
+
+  // console.log('sending TX...');
+  console.log(`Sending TX with gasLimit ${transactionRequest.gasLimit} and value ${transactionRequest.value}...`);
+
+  // Send a transaction
+  await signer.sendTransaction(<TransactionRequest>transactionRequest).then((txObj) => {
+    console.log('txHash', txObj.hash);
+  });
+}
+
+interface Metadata {
+  anomaly_score: string;
+  anomaly_score_stage_Exploitation: string;
+  anomaly_score_stage_Preparation: string;
+  attacker_address: string;
+  involved_addresses_1: string;
+  involved_addresses_10: string;
+  involved_addresses_11: string;
+  involved_addresses_12: string;
+  involved_addresses_13: string;
+  involved_addresses_14: string;
+  involved_addresses_15: string;
+  involved_addresses_16: string;
+  involved_addresses_17: string;
+  involved_addresses_18: string;
+  involved_addresses_19: string;
+  involved_addresses_2: string;
+  involved_addresses_20: string;
+  involved_addresses_21: string;
+  involved_addresses_22: string;
+  involved_addresses_23: string;
+  involved_addresses_3: string;
+  involved_addresses_4: string;
+  involved_addresses_5: string;
+  involved_addresses_6: string;
+  involved_addresses_7: string;
+  involved_addresses_8: string;
+  involved_addresses_9: string;
+  involved_alerts_0: string;
+  involved_alerts_1: string;
+  involved_alerts_10: string;
+  involved_alerts_11: string;
+  involved_alerts_12: string;
+  involved_alerts_13: string;
+  involved_alerts_14: string;
+  involved_alerts_15: string;
+  involved_alerts_16: string;
+  involved_alerts_2: string;
+  involved_alerts_3: string;
+  involved_alerts_4: string;
+  involved_alerts_5: string;
+  involved_alerts_6: string;
+  involved_alerts_7: string;
+  involved_alerts_8: string;
+  involved_alerts_9: string;
+}
+
+interface WebhookData {
+  Alert: string;
+  Metadata: Metadata;
+}
 
 function run() {
   const app = express();
-  const port = 3000;
+  const port = 8545;
 
   app.use(express.json());
 
   app.post('/webhook', (req: Request, res: Response) => {
     console.log(req.body);
+
+    const data: WebhookData = req.body;
+    const anomalyScore = Number(data.Metadata.anomaly_score);
+    console.log(`Anomaly score: ${anomalyScore}`);
     res.status(200).send('Webhook received!');
+
+    if (anomalyScore > 0.7) {
+      console.log(`Anomaly score: ${anomalyScore} is larger than 0.7!! Let's exit liquidity!!`);
+    } else {
+      console.log(`Anomaly score: ${anomalyScore} is smaller than 0.7, no need to process.`);
+    }
   });
 
   app.listen(port, () => {
@@ -525,4 +893,57 @@ function run() {
   });
 }
 
-run();
+import fs from 'fs';
+async function loadJsonFromFile(path: string): Promise<any> {
+  const data = await fs.promises.readFile(path);
+  return JSON.parse(data.toString());
+}
+
+async function get_balance_of_aETHUSDC() {
+  // 假設有一個叫做 "data.json" 的檔案
+  console.log('in get_balance_of_aETHUSDC()');
+  const genericErc20Abi = await loadJsonFromFile('pmli/erc20.abi.json');
+  const tokenContractAddress = aEthUSDC.address;
+  const contract = new ethers.Contract(tokenContractAddress, genericErc20Abi, provider);
+  const balance = await contract.balanceOf((signer.address));
+  console.log(balance);
+  return balance;
+}
+
+async function get_balance_of_erc20(tokenContractAddress: string) {
+  // 假設有一個叫做 "data.json" 的檔案
+  console.log('in get_balance_of_aETHUSDC()');
+  const genericErc20Abi = await loadJsonFromFile('pmli/erc20.abi.json');
+  const contract = new ethers.Contract(tokenContractAddress, genericErc20Abi, provider);
+  const balance = await contract.balanceOf(signer.address);
+  console.log(balance);
+  return balance;
+}
+
+
+// test_eth_swap2_usdc_n_supply_usdc_to_aave2();
+
+async function main() {
+  // await test_sample_code_by_furucombo();
+  // await test_send_1_ether_using_etherjs();
+  // await test_eth_swap2_usdc();
+  // await test_eth_swap2_usdc();
+  // await test_usdc_swap2_eth();
+  // await test_supply_usdc_to_aave();
+  // await test_supply_n_withdraw_usdc_at_aave();
+  // await test_supply_n_withdraw_usdc_at_aave3();
+  // await test_supply_n_withdraw_usdc_at_aave2();
+
+  // await get_balance_of_erc20(USDC.address);
+  // await get_balance_of_aETHUSDC();
+  await supply_all_usdc_to_aave2();
+  // await get_balance_of_erc20(USDC.address);
+  // await get_balance_of_aETHUSDC();
+  // await withdraw_usdc_from_aave2();
+  // await get_balance_of_erc20(USDC.address);
+  // await get_balance_of_aETHUSDC();
+
+  //run();
+}
+
+main();

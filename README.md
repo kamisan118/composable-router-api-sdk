@@ -1,5 +1,5 @@
 # Furucombo DeFi Guardian
-This work is done by pmli at 2023 ETHTaipei Hackathon.
+This work is done by Poming (pmli) at 2023 ETHTaipei Hackathon.
 
 ## Project Description
 
